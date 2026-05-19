@@ -60,7 +60,7 @@ if final_file is not None:
     raw_img = io.imread(final_file, as_gray=True)
     
     # 2. ZMĚNA: Snížení rozlišení z 3200 na 1200 (Klíčové pro stabilitu!)
-    target_width = 1200
+    target_width = 2000
     scale = target_width / raw_img.shape[1]
     new_shape = (int(raw_img.shape[0] * scale), target_width)
     image = resize(raw_img, new_shape, anti_aliasing=True)
