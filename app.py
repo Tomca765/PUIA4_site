@@ -81,19 +81,32 @@ if final_file is not None:
             min_row, min_col, max_row, max_col = region.bbox
             card_crop = image[min_row:max_row, min_col:max_col]
 
+            # --- NOVÉ: Pokud je karta focená na šířku, otočíme ji o 90° nastojato ---
+            if card_crop.shape[1] > card_crop.shape[0]:
+                card_crop = np.rot90(card_crop, k=1)
+
             # Skew correction (zjednodušeno pro rychlost)
             card_img_res = resize(card_crop, (int(card_crop.shape[0]*(800/card_crop.shape[1])), 800))
             
             # Převod na uint8 je nutný pro EasyOCR
             img_uint8 = (card_img_res * 255).astype(np.uint8)
             
-            # Spuštění OCR
+            # Spuštění OCR a vyhledávání
             with st.spinner(f'Čtu kartu č. {extracted_count} a hledám na Scryfallu...'):
                 result = reader.readtext(img_uint8, detail=0)
-                text = " ".join(result) if result else "Text nenalezen"
-                
-                # Dotaz na Scryfall
                 scryfall_name, scryfall_img = fetch_scryfall_card(result)
+                
+                # --- NOVÉ: Pokud Scryfall nic nenašel, karta je možná vzhůru nohama (otočená o 180°) ---
+                if not scryfall_name and result:
+                    # Rychlé otočení matice o 180 stupňů
+                    img_uint8 = np.rot90(img_uint8, k=2)
+                    card_img_res = np.rot90(card_img_res, k=2) # Otočíme i náhled pro zobrazení v aplikaci
+                    
+                    # Druhý pokus o OCR a vyhledání
+                    result = reader.readtext(img_uint8, detail=0)
+                    scryfall_name, scryfall_img = fetch_scryfall_card(result)
+                
+                text = " ".join(result) if result else "Text nenalezen"
             
             # Zobrazení výsledku ve 3 sloupcích pro lepší přehled
             col1, col2, col3 = st.columns([1.2, 1, 1.2])
