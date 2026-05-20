@@ -51,7 +51,7 @@ st.title("🎴 Úsporná čtečka karet se Scryfallem")
 reader = load_reader()
 
 img_file = st.sidebar.file_uploader("Nahraj fotku nebo vyfoť", type=['jpg', 'jpeg', 'png'])
-camera_file = st.sidebar.camera_input("Nebo použij kameru")
+# camera_file = st.sidebar.camera_input("Nebo použij kameru")
 
 final_file = camera_file if camera_file else img_file
 
