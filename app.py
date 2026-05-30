@@ -75,7 +75,7 @@ def query_scryfall(candidate_name):
     return None, None
 
 st.set_page_config(page_title="Dokonalá čtečka karet", layout="centered")
-st.title("🎴 Dokonalá čtečka karet se Scryfallem")
+st.title("🎴 Čtečka karet se Scryfallem")
 
 # --- INICIALIZACE TRVALÉ PAMĚTI ---
 if "master_card_list" not in st.session_state:
