@@ -12,27 +12,46 @@ import urllib.parse
 def load_reader():
     return easyocr.Reader(['en'], gpu=False)
 
-# Pomocná funkce pro perspective transform (dokonalý výřez)
+# VYLEPŠENÁ FUNKCE: Zachovává perfektní poměr stran bez deformace
 def rectify_image(image, pts_rect):
-    width, height = 600, 800
+    # Seřadíme 4 body tak, aby šly spolehlivě za sebou: tl, tr, br, bl
+    x_sorted = pts_rect[np.argsort(pts_rect[:, 0]), :]
+    left_most = x_sorted[:2, :]
+    right_most = x_sorted[2:, :]
     
+    tl = left_most[np.argmin(left_most[:, 1]), :]
+    bl = left_most[np.argmax(left_most[:, 1]), :]
+    tr = right_most[np.argmin(right_most[:, 1]), :]
+    br = right_most[np.argmax(right_most[:, 1]), :]
+    
+    rect = np.array([tl, tr, br, bl], dtype="float32")
+    
+    # Výpočet reálných rozměrů stran v obrázku pomocí euklidovské vzdálenosti
+    width_a = np.linalg.norm(tr - tl)
+    width_b = np.linalg.norm(br - bl)
+    max_width = max(int(width_a), int(width_b))
+    
+    height_a = np.linalg.norm(bl - tl)
+    height_b = np.linalg.norm(br - tr)
+    max_height = max(int(height_a), int(height_b))
+    
+    # Poměr stran MTG karty je ideálně cca 1 : 1.39 (např. 600 x 834)
+    # Dynamicky určíme rozměr podle toho, jak karta na fotce reálně leží
+    if max_width > max_height:
+        # Karta leží na boku -> cílový výřez bude schválně na šířku
+        dst_w, dst_h = 834, 600
+    else:
+        # Karta stojí -> cílový výřez bude standardně na výšku
+        dst_w, dst_h = 600, 834
+        
     dst_pts = np.array([
         [0, 0],
-        [width, 0],
-        [width, height],
-        [0, height]], dtype="float32")
-    
-    # Seřadíme 4 body obdélníku
-    rect = np.zeros((4, 2), dtype="float32")
-    s = pts_rect.sum(axis=1)
-    rect[0] = pts_rect[np.argmin(s)] # horní-levý
-    rect[2] = pts_rect[np.argmax(s)] # dolní-pravý
-    diff = np.diff(pts_rect, axis=1)
-    rect[1] = pts_rect[np.argmin(diff)] # horní-pravý
-    rect[3] = pts_rect[np.argmax(diff)] # dolní-levý
-
+        [dst_w, 0],
+        [dst_w, dst_h],
+        [0, dst_h]], dtype="float32")
+        
     M = cv2.getPerspectiveTransform(rect, dst_pts)
-    warped = cv2.warpPerspective(image, M, (width, height), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    warped = cv2.warpPerspective(image, M, (dst_w, dst_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
     return warped
 
 # Funkce pro hledání na Scryfallu
@@ -67,9 +86,7 @@ def fetch_scryfall_card(ocr_result):
 st.set_page_config(page_title="Dokonalá čtečka karet", layout="centered")
 st.title("🎴 Dokonalá čtečka karet se Scryfallem")
 
-# Příprava prázdného kontejneru pro seznam karet na začátku stránky
 seznam_container = st.container()
-
 reader = load_reader()
 
 img_file = st.sidebar.file_uploader("Nahraj fotku nebo vyfoť", type=['jpg', 'jpeg', 'png'])
@@ -80,7 +97,7 @@ if img_file is not None:
     target_width = 1200
     image = cv2.resize(raw_img, (target_width, int(raw_img.shape[0] * (target_width / raw_img.shape[1]))), interpolation=cv2.INTER_AREA)
     
-    st.info("Zpracovávám obrázek a hledám karty... prosím čekejte.")
+    st.info("Zpracovávám obrázek and hledám karty... prosím čekejte.")
 
     # Detekce hran
     gray = (image * 255).astype(np.uint8)
@@ -106,20 +123,19 @@ if img_file is not None:
             
             extracted_count += 1
             
-            # Získání rovného výřezu
+            # 1. KROK: Získáme narovnaný výřez, který ale NENÍ deformovaný
             rectified_card = rectify_image(image, box)
-            
-            # OPRAVA 1: Ořízneme hodnoty float matice striktně do rozmezí 0.0 až 1.0
             rectified_card = np.clip(rectified_card, 0.0, 1.0)
             
-            card_img_res = cv2.resize(rectified_card, (int(rectified_card.shape[0]*(800/rectified_card.shape[1])), 800), interpolation=cv2.INTER_CUBIC)
+            # 2. KROK: Pokud nám vylezl výřez naležato, otočíme ho o 90°, aby stál vertikálně
+            if rectified_card.shape[1] > rectified_card.shape[0]:
+                rectified_card = np.rot90(rectified_card, k=1)
             
-            # OPRAVA 2: Pro jistotu ořízneme i po změně velikosti
-            card_img_res = np.clip(card_img_res, 0.0, 1.0)
-            
+            # Nyní máme garantovaný rozměr 600x834 bez deformace textu
+            card_img_res = rectified_card
             img_uint8 = (card_img_res * 255).astype(np.uint8)
             
-            # Příprava 4 rotací (0°, 90°, 180°, 270°)
+            # Příprava 4 rotací pro jistotu (0°, 90°, 180°, 270°)
             rotated_images = [img_uint8]
             rotated_captions = [card_img_res]
             for k in range(1, 4):
@@ -131,7 +147,7 @@ if img_file is not None:
             best_ocr_text = "Nenalezen validní název"
             correct_img_res = card_img_res
 
-            with st.spinner(f'Čtu kartu č. {extracted_count} ze všech stran...'):
+            with st.spinner(f'Čtu kartu č. {extracted_count} ze všech stran bez deformace...'):
                 for idx, rotated_img in enumerate(rotated_images):
                     result = reader.readtext(rotated_img, detail=0)
                     if result:
@@ -150,8 +166,7 @@ if img_file is not None:
             col1, col2, col3 = st.columns([1.2, 1, 1.2])
             
             with col1:
-                # OPRAVA 3: Přidán parametr clamp=True, který definitivně zakáže pád aplikace
-                st.image(correct_img_res, caption=f"Výřez (Karta {extracted_count})", clamp=True)
+                st.image(correct_img_res, caption=f"Krásný výřez (Karta {extracted_count})", clamp=True)
                 
             with col2:
                 st.write("**OCR Text:**")
@@ -177,4 +192,4 @@ if img_file is not None:
             st.divider()
 
     if extracted_count == 0:
-        st.warning("Nenalezena žádná karta. Zkuste fotit na kontrastnějším pozadí (např. tmavá podložka).")
+        st.warning("Nenalezena žádná karta. Zkuste fotit na kontrastnějším pozadí.")
