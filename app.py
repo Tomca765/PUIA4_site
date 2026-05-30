@@ -3,7 +3,7 @@ import numpy as np
 import math
 from skimage import io
 from skimage.feature import canny
-from skimage.transform import resize
+from skimage.transform import resize, rotate  # PŘIDÁNO: import funkce 'rotate'
 from skimage.morphology import dilation, square
 from skimage.measure import label, regionprops
 from scipy import ndimage
@@ -47,6 +47,9 @@ def fetch_scryfall_card(ocr_result):
 st.set_page_config(page_title="OCR Karet", layout="centered")
 st.title("🎴 Úsporná čtečka karet se Scryfallem")
 
+# --- NOVÉ: Příprava prázdného kontejneru pro seznam karet na začátku stránky ---
+seznam_container = st.container()
+
 # Načtení modelu hned na začátku
 reader = load_reader()
 
@@ -75,6 +78,7 @@ if final_file is not None:
     regions = regionprops(labeled_image)
 
     extracted_count = 0
+    found_cards = []  # --- NOVÉ: Seznam pro ukládání nalezených unikátních jmen karet ---
     
     for region in regions:
         if region.area > 2000: # Limit pro menší rozlišení
@@ -82,7 +86,13 @@ if final_file is not None:
             min_row, min_col, max_row, max_col = region.bbox
             card_crop = image[min_row:max_row, min_col:max_col]
 
-            # --- NOVÉ: Pokud je karta focená na šířku, otočíme ji o 90° nastojato ---
+            # --- NOVÉ: Automatické narovnání náklonu (Deskewing) ---
+            # region.orientation vrací úhel natočení hlavní osy objektu v radiánech
+            angle = np.rad2deg(region.orientation)
+            # Otočíme výřez karty (resize=True zajistí, že neodřízneme rohy karty)
+            card_crop = rotate(card_crop, angle, resize=True, mode='edge')
+
+            # --- Pokud je karta i po narovnání stále na šířku, otočíme ji o 90° nastojato ---
             if card_crop.shape[1] > card_crop.shape[0]:
                 card_crop = np.rot90(card_crop, k=1)
 
@@ -97,7 +107,7 @@ if final_file is not None:
                 result = reader.readtext(img_uint8, detail=0)
                 scryfall_name, scryfall_img = fetch_scryfall_card(result)
                 
-                # --- NOVÉ: Pokud Scryfall nic nenašel, karta je možná vzhůru nohama (otočená o 180°) ---
+                # --- Pokud Scryfall nic nenašel, karta je možná vzhůru nohama (otočená o 180°) ---
                 if not scryfall_name and result:
                     # Rychlé otočení matice o 180 stupňů
                     img_uint8 = np.rot90(img_uint8, k=2)
@@ -106,6 +116,10 @@ if final_file is not None:
                     # Druhý pokus o OCR a vyhledání
                     result = reader.readtext(img_uint8, detail=0)
                     scryfall_name, scryfall_img = fetch_scryfall_card(result)
+                
+                # --- NOVÉ: Pokud máme shodu, přidáme kartu do seznamu (pokud tam ještě není) ---
+                if scryfall_name and scryfall_name not in found_cards:
+                    found_cards.append(scryfall_name)
                 
                 text = " ".join(result) if result else "Text nenalezen"
             
@@ -129,6 +143,15 @@ if final_file is not None:
                 else:
                     st.warning("Náhled není k dispozici")
                     
+            st.divider()
+
+    # --- NOVÉ: Zpětné vykreslení seznamu karet na úplný začátek stránky ---
+    if found_cards:
+        with seznam_container:
+            st.subheader("📋 Seznam získaných karet:")
+            # Zobrazení jako přehledné odrážky
+            for card in found_cards:
+                st.markdown(f"**• {card}**")
             st.divider()
 
     if extracted_count == 0:
