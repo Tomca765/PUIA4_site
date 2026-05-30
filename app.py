@@ -82,12 +82,11 @@ if img_file is not None:
     
     st.info("Zpracovávám obrázek a hledám karty... prosím čekejte.")
 
-    # Detekce hran – trochu jsme povolili prahy (místo 30/150 je tu 20/100)
+    # Detekce hran
     gray = (image * 255).astype(np.uint8)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edged = cv2.Canny(blurred, 20, 100)
     
-    # Propojení drobných mezer v konturách, aby se obdélník nespletl
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     edged = cv2.dilate(edged, kernel, iterations=1)
     
@@ -100,21 +99,24 @@ if img_file is not None:
     for c in cnts:
         area = cv2.contourArea(c)
         
-        # --- ZMĚNA: Snížili jsme minimální plochu z 20000 na 8000 pro případ, že je karta dál ---
         if area > 8000:
-            # --- KLÍČOVÁ OPRAVA: Už nehledáme přesně 4 body kontury ---
-            # Namísto toho kolem jakéhokoliv velkého tvaru opíšeme ideální otočený obdélník.
-            # Tento obdélník má VŽDY 4 rohy, takže zaoblené rohy karet nás už nerozhodí.
             rect = cv2.minAreaRect(c)
             box = cv2.boxPoints(rect)
             box = np.array(box, dtype="float32")
             
             extracted_count += 1
             
-            # Získání dokonalého rovného výřezu z opsaného obdélníku
+            # Získání rovného výřezu
             rectified_card = rectify_image(image, box)
             
+            # OPRAVA 1: Ořízneme hodnoty float matice striktně do rozmezí 0.0 až 1.0
+            rectified_card = np.clip(rectified_card, 0.0, 1.0)
+            
             card_img_res = cv2.resize(rectified_card, (int(rectified_card.shape[0]*(800/rectified_card.shape[1])), 800), interpolation=cv2.INTER_CUBIC)
+            
+            # OPRAVA 2: Pro jistotu ořízneme i po změně velikosti
+            card_img_res = np.clip(card_img_res, 0.0, 1.0)
+            
             img_uint8 = (card_img_res * 255).astype(np.uint8)
             
             # Příprava 4 rotací (0°, 90°, 180°, 270°)
@@ -127,7 +129,7 @@ if img_file is not None:
             best_scryfall_name = None
             best_scryfall_img = None
             best_ocr_text = "Nenalezen validní název"
-            correct_img_uint8 = img_uint8
+            correct_img_res = card_img_res
 
             with st.spinner(f'Čtu kartu č. {extracted_count} ze všech stran...'):
                 for idx, rotated_img in enumerate(rotated_images):
@@ -139,7 +141,7 @@ if img_file is not None:
                             best_scryfall_name = scryfall_name
                             best_scryfall_img = scryfall_img
                             best_ocr_text = " ".join(result)
-                            correct_img_uint8 = rotated_captions[idx]
+                            correct_img_res = rotated_captions[idx]
                             break
                             
             if best_scryfall_name and best_scryfall_name not in found_cards:
@@ -148,7 +150,8 @@ if img_file is not None:
             col1, col2, col3 = st.columns([1.2, 1, 1.2])
             
             with col1:
-                st.image(correct_img_uint8, caption=f"Výřez (Karta {extracted_count})")
+                # OPRAVA 3: Přidán parametr clamp=True, který definitivně zakáže pád aplikace
+                st.image(correct_img_res, caption=f"Výřez (Karta {extracted_count})", clamp=True)
                 
             with col2:
                 st.write("**OCR Text:**")
