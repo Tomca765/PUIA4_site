@@ -6,15 +6,21 @@ from skimage import io
 import easyocr
 import requests
 import urllib.parse
+import difflib  # PŘIDÁNO: Pro výpočet největší shody textu
 
 # 1. OPTIMALIZACE: Načítáme model s omezením paměti
 @st.cache_resource
 def load_reader():
     return easyocr.Reader(['en'], gpu=False)
 
-# VYLEPŠENÁ FUNKCE: Zachovává perfektní poměr stran bez deformace
+# Pomocná funkce pro výpočet textové shody (0.0 až 1.0)
+def get_similarity(str1, str2):
+    if not str1 or not str2:
+        return 0.0
+    return difflib.SequenceMatcher(None, str1.lower(), str2.lower()).ratio()
+
+# Funkce pro perspective transform (dokonalý výřez)
 def rectify_image(image, pts_rect):
-    # Seřadíme 4 body tak, aby šly spolehlivě za sebou: tl, tr, br, bl
     x_sorted = pts_rect[np.argsort(pts_rect[:, 0]), :]
     left_most = x_sorted[:2, :]
     right_most = x_sorted[2:, :]
@@ -26,7 +32,6 @@ def rectify_image(image, pts_rect):
     
     rect = np.array([tl, tr, br, bl], dtype="float32")
     
-    # Výpočet reálných rozměrů stran v obrázku pomocí euklidovské vzdálenosti
     width_a = np.linalg.norm(tr - tl)
     width_b = np.linalg.norm(br - bl)
     max_width = max(int(width_a), int(width_b))
@@ -35,13 +40,9 @@ def rectify_image(image, pts_rect):
     height_b = np.linalg.norm(br - tr)
     max_height = max(int(height_a), int(height_b))
     
-    # Poměr stran MTG karty je ideálně cca 1 : 1.39 (např. 600 x 834)
-    # Dynamicky určíme rozměr podle toho, jak karta na fotce reálně leží
     if max_width > max_height:
-        # Karta leží na boku -> cílový výřez bude schválně na šířku
         dst_w, dst_h = 834, 600
     else:
-        # Karta stojí -> cílový výřez bude standardně na výšku
         dst_w, dst_h = 600, 834
         
     dst_pts = np.array([
@@ -54,22 +55,12 @@ def rectify_image(image, pts_rect):
     warped = cv2.warpPerspective(image, M, (dst_w, dst_h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
     return warped
 
-# Funkce pro hledání na Scryfallu
-def fetch_scryfall_card(ocr_result):
-    if not ocr_result:
+# Upravené API: Přijímá přímo jeden konkrétní řádek textu
+def query_scryfall(candidate_name):
+    if not candidate_name or len(candidate_name.strip()) <= 3:
         return None, None
-
-    candidate_name = None
-    for line in ocr_result:
-        if len(line.strip()) > 3:
-            candidate_name = line.strip()
-            break
-            
-    if not candidate_name:
-        return None, None
-    
-    url = f"https://api.scryfall.com/cards/named?fuzzy={urllib.parse.quote(candidate_name)}"
-    
+        
+    url = f"https://api.scryfall.com/cards/named?fuzzy={urllib.parse.quote(candidate_name.strip())}"
     try:
         response = requests.get(url)
         if response.status_code == 200:
@@ -78,10 +69,9 @@ def fetch_scryfall_card(ocr_result):
             if not image_url and 'card_faces' in data:
                 image_url = data['card_faces'][0].get('image_uris', {}).get('normal')
             return data.get('name'), image_url
-        else:
-            return None, None
-    except Exception as e:
-        return None, None
+    except:
+        pass
+    return None, None
 
 st.set_page_config(page_title="Dokonalá čtečka karet", layout="centered")
 st.title("🎴 Dokonalá čtečka karet se Scryfallem")
@@ -97,7 +87,7 @@ if img_file is not None:
     target_width = 1200
     image = cv2.resize(raw_img, (target_width, int(raw_img.shape[0] * (target_width / raw_img.shape[1]))), interpolation=cv2.INTER_AREA)
     
-    st.info("Zpracovávám obrázek and hledám karty... prosím čekejte.")
+    st.info("Zpracovávám obrázek a hledám karty... prosím čekejte.")
 
     # Detekce hran
     gray = (image * 255).astype(np.uint8)
@@ -123,58 +113,69 @@ if img_file is not None:
             
             extracted_count += 1
             
-            # 1. KROK: Získáme narovnaný výřez, který ale NENÍ deformovaný
             rectified_card = rectify_image(image, box)
             rectified_card = np.clip(rectified_card, 0.0, 1.0)
             
-            # 2. KROK: Pokud nám vylezl výřez naležato, otočíme ho o 90°, aby stál vertikálně
             if rectified_card.shape[1] > rectified_card.shape[0]:
                 rectified_card = np.rot90(rectified_card, k=1)
             
-            # Nyní máme garantovaný rozměr 600x834 bez deformace textu
             card_img_res = rectified_card
             img_uint8 = (card_img_res * 255).astype(np.uint8)
             
-            # Příprava 4 rotací pro jistotu (0°, 90°, 180°, 270°)
+            # Příprava 4 rotací (0°, 90°, 180°, 270°)
             rotated_images = [img_uint8]
             rotated_captions = [card_img_res]
             for k in range(1, 4):
                 rotated_images.append(np.rot90(img_uint8, k=k))
                 rotated_captions.append(np.rot90(card_img_res, k=k))
 
+            # --- INICIALIZACE BODOVÁNÍ ---
+            best_score = -1.0
             best_scryfall_name = None
             best_scryfall_img = None
             best_ocr_text = "Nenalezen validní název"
             correct_img_res = card_img_res
 
-            with st.spinner(f'Čtu kartu č. {extracted_count} ze všech stran bez deformace...'):
+            with st.spinner(f'Scenuji kartu č. {extracted_count} ze všech 4 stran pro nejvyšší shodu...'):
                 for idx, rotated_img in enumerate(rotated_images):
                     result = reader.readtext(rotated_img, detail=0)
                     if result:
-                        scryfall_name, scryfall_img = fetch_scryfall_card(result)
-                        
-                        if scryfall_name and scryfall_img:
-                            best_scryfall_name = scryfall_name
-                            best_scryfall_img = scryfall_img
-                            best_ocr_text = " ".join(result)
-                            correct_img_res = rotated_captions[idx]
-                            break
-                            
+                        # Zkontrolujeme první 3 řádky z dané rotace
+                        for candidate in result[:3]:
+                            if len(candidate.strip()) > 3:
+                                scryfall_name, scryfall_img = query_scryfall(candidate)
+                                
+                                if scryfall_name:
+                                    # Spočítáme shodu mezi OCR textem a výsledkem z databáze
+                                    score = get_similarity(candidate, scryfall_name)
+                                    
+                                    # Pokud je shoda lepší než dosavadní maximum, uložíme ji jako vítěze
+                                    if score > best_score:
+                                        best_score = score
+                                        best_scryfall_name = scryfall_name
+                                        best_scryfall_img = scryfall_img
+                                        best_ocr_text = " | ".join(result)
+                                        correct_img_res = rotated_captions[idx]
+
+            # Pojistka: Pokud je shoda extrémně nízká (pod 20 %), raději kartu neuznáme jako nalezenou
+            if best_score < 0.2:
+                best_scryfall_name = None
+
             if best_scryfall_name and best_scryfall_name not in found_cards:
                 found_cards.append(best_scryfall_name)
             
             col1, col2, col3 = st.columns([1.2, 1, 1.2])
             
             with col1:
-                st.image(correct_img_res, caption=f"Krásný výřez (Karta {extracted_count})", clamp=True)
+                st.image(correct_img_res, caption=f"Vítězná rotace (Karta {extracted_count})", clamp=True)
                 
             with col2:
                 st.write("**OCR Text:**")
                 st.caption(best_ocr_text)
                 if best_scryfall_name:
-                    st.success(f"**Shoda:** {best_scryfall_name}")
+                    st.success(f"**Shoda ({int(best_score*100)}%):** {best_scryfall_name}")
                 else:
-                    st.error("Karta nenalezena v databázi.")
+                    st.error("Karta nenalezena nebo nízká shoda.")
                     
             with col3:
                 if best_scryfall_img:
