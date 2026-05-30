@@ -164,7 +164,7 @@ if img_files:
                                                 best_ocr_text = " | ".join(result)
                                                 correct_img_res = rotated_captions[idx]
 
-                    if best_score < 0.2:
+                    if best_score < 0.5:
                         best_scryfall_name = None
 
                     if best_scryfall_name and best_scryfall_name not in st.session_state.master_card_list:
