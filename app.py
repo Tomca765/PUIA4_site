@@ -7,7 +7,7 @@ import easyocr
 import requests
 import urllib.parse
 import difflib
-import gc  # PŘIDÁNO: Garbage Collector pro okamžité uvolňování RAM
+import gc
 
 # 1. OPTIMALIZACE: Načítáme model s omezením paměti
 @st.cache_resource
@@ -86,27 +86,16 @@ if st.sidebar.button("🗑️ Vymazat celou paměť karet"):
     st.session_state.master_card_list = []
     st.rerun()
 
-# Příprava prázdného kontejneru pro seznam karet na úplném začátku stránky
+# Příprava prázdného kontejneru na úplném začátku stránky (naplníme ho až na konci skriptu)
 seznam_container = st.container()
-
-# Vykreslení aktuálního stavu permanentního seznamu navrchu
-if st.session_state.master_card_list:
-    with seznam_container:
-        st.subheader(f"📋 Celkový seznam naskenovaných karet ({len(st.session_state.master_card_list)}):")
-        for card in st.session_state.master_card_list:
-            st.markdown(f"**• {card}**")
-        st.divider()
 
 reader = load_reader()
 
-# ZMĚNA: Přidán parametr accept_multiple_files=True
 img_files = st.sidebar.file_uploader("Nahraj fotky nebo vyfoť (i více najednou)", type=['jpg', 'jpeg', 'png'], accept_multiple_files=True)
 
 if img_files:
-    # Procházíme nahrané soubory jeden po druhém
     for file_idx, img_file in enumerate(img_files):
         
-        # Každou fotku zabalíme do přehledného expanderu
         with st.expander(f"📸 Zpracování souboru: {img_file.name}", expanded=True):
             raw_img = io.imread(img_file, as_gray=True)
             
@@ -178,11 +167,9 @@ if img_files:
                     if best_score < 0.2:
                         best_scryfall_name = None
 
-                    # UKLÁDÁNÍ DO TRVALÉ PAMĚTI: Pokud kartu známe a ještě v ní není, šoupneme ji tam
                     if best_scryfall_name and best_scryfall_name not in st.session_state.master_card_list:
                         st.session_state.master_card_list.append(best_scryfall_name)
                     
-                    # Výpis detailů na obrazovku pod expander
                     col1, col2, col3 = st.columns([1.2, 1, 1.2])
                     
                     with col1:
@@ -207,10 +194,15 @@ if img_files:
             if extracted_count == 0:
                 st.warning("V tomto souboru nebyla rozpoznána žádná karta.")
 
-        # --- KLÍČOVÉ ČIŠTĚNÍ PAMĚTI ---
-        # Po dokončení práce s daným souborem smažeme obrovská obrazová pole z RAM
+        # Vyčištění paměti po každém souboru
         del raw_img, image, gray, blurred, edged, cnts
-        gc.collect()  # Vynutíme okamžité vyčištění paměti Pythonem
-        
-    # Na konci celého cyklu bleskově překreslíme horní kontejner, aby se okamžitě aktualizovaly nově přidané karty
-    st.rerun()
+        gc.collect()
+
+# --- DYNAMICKÉ VYKRESLENÍ DO HORNÍHO KONTEJNERU ---
+# Teprve teď, když skript doběhl, vložíme výsledný seznam nahoru na stránku bez nutnosti restartu.
+if st.session_state.master_card_list:
+    with seznam_container:
+        st.subheader(f"📋 Celkový seznam naskenovaných karet ({len(st.session_state.master_card_list)}):")
+        for card in st.session_state.master_card_list:
+            st.markdown(f"**• {card}**")
+        st.divider()
